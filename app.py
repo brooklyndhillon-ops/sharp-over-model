@@ -16,7 +16,7 @@ CORNER_W = 0.025
 # Edge threshold (3% default)
 EDGE_THRESHOLD = 0.03
 
-# Common league IDs (API-FOOTBALL)
+# League IDs (API-FOOTBALL)
 LEAGUES = {
     "Premier League (England)": 39,
     "Championship (England)": 40,
@@ -24,6 +24,16 @@ LEAGUES = {
     "Serie A (Italy)": 135,
     "Bundesliga (Germany)": 78,
     "Ligue 1 (France)": 61
+}
+
+# League -> expected country for clean team matching
+LEAGUE_COUNTRY = {
+    39: "England",
+    40: "England",
+    140: "Spain",
+    135: "Italy",
+    78: "Germany",
+    61: "France"
 }
 
 # =========================
@@ -82,42 +92,37 @@ def extract_team_stat(stats_response, team_id: int, stat_type: str):
     return 0.0
 
 # =========================
-# TEAM SELECTION (IMPORTANT FIX)
+# TEAM MATCHING (COUNTRY-BASED FIX)
 # =========================
-def search_teams(team_query: str):
+def get_team_id_smart(team_query: str, league_id: int):
+    """
+    Search teams globally, then select the team whose country matches the league country.
+    This avoids Inter -> Internacional etc.
+    """
     data = api_get("teams", {"search": team_query})
-    return data.get("response", [])
-
-def team_is_in_league_season(team_id: int, league_id: int, season: int) -> bool:
-    """
-    Check if team has fixtures in this league+season (fast sanity check).
-    """
-    data = api_get("fixtures", {"team": team_id, "league": league_id, "season": season, "last": 1})
     resp = data.get("response", [])
-    return len(resp) > 0
 
-def get_team_id_smart(team_query: str, league_id: int, season: int):
-    """
-    1) Search teams globally
-    2) Prefer a team that actually appears in selected league+season fixtures
-    3) Fallback to first result if none match
-    """
-    candidates = search_teams(team_query)
-    if not candidates:
+    if not resp:
         st.error(f"Team not found: '{team_query}'. Try a shorter name.")
         st.stop()
 
-    # Try to find the candidate that participates in this league+season
-    for c in candidates[:8]:  # limit checks to avoid rate limits
-        tid = c["team"]["id"]
-        if team_is_in_league_season(tid, league_id, season):
-            name = c["team"]["name"]
-            st.caption(f"Matched '{team_query}' → **{name}** (team_id: {tid}) [league+season verified]")
-            return tid, name
+    expected_country = LEAGUE_COUNTRY.get(league_id)
 
-    # Fallback
-    team = candidates[0]["team"]
-    st.caption(f"Matched '{team_query}' → **{team['name']}** (team_id: {team['id']}) [fallback]")
+    # Try exact country match first
+    if expected_country:
+        for team_data in resp:
+            team = team_data["team"]
+            country = team.get("country")
+            if country == expected_country:
+                st.caption(
+                    f"Matched '{team_query}' → **{team['name']}** ({country}) "
+                    f"(team_id: {team['id']})"
+                )
+                return team["id"], team["name"]
+
+    # Fallback to first result
+    team = resp[0]["team"]
+    st.caption(f"Matched '{team_query}' → **{team['name']}** (fallback) (team_id: {team['id']})")
     return team["id"], team["name"]
 
 # =========================
@@ -178,9 +183,9 @@ if st.button("Calculate"):
         st.error("Please enter both team names.")
         st.stop()
 
-    with st.spinner("Finding teams (smart match) and pulling last 10 match stats..."):
-        home_id, home_name = get_team_id_smart(home_team_in.strip(), league_id, season)
-        away_id, away_name = get_team_id_smart(away_team_in.strip(), league_id, season)
+    with st.spinner("Finding correct teams and pulling last 10 match stats..."):
+        home_id, home_name = get_team_id_smart(home_team_in.strip(), league_id)
+        away_id, away_name = get_team_id_smart(away_team_in.strip(), league_id)
 
         home_shots, home_corners = get_recent_weighted_shots_corners(home_id, league_id, season)
         away_shots, away_corners = get_recent_weighted_shots_corners(away_id, league_id, season)
